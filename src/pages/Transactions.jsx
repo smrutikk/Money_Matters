@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import Sidebar from '../components/Sidebar';
 import AddTransaction from '../components/AddTransaction';
+import UpdateTransaction from '../components/UpdateTransaction';
 
 // --- SVG Icon Components (ASSUMED TO BE CORRECT AND UNCHANGED) ---
 const PlusIcon = () => (
@@ -31,16 +32,11 @@ const TrashIcon = () => (
 );
 // --- End SVG Icon Components ---
 
-
 const formatDateFromAPI = (isoDateString) => {
   if (!isoDateString) return "N/A";
   try {
     const dateObj = new Date(isoDateString);
-    // Check if dateObj is valid
-    if (isNaN(dateObj.getTime())) {
-        // console.warn("Invalid date string received for formatting:", isoDateString);
-        return "Invalid Date";
-    }
+    if (isNaN(dateObj.getTime())) return "Invalid Date";
     const day = dateObj.getDate();
     const month = dateObj.toLocaleString('en-US', { month: 'short' });
     let hours = dateObj.getHours();
@@ -51,8 +47,7 @@ const formatDateFromAPI = (isoDateString) => {
     const minutesStr = minutes < 10 ? '0' + minutes : minutes;
     return `${day} ${month}, ${hours}.${minutesStr} ${ampm}`;
   } catch (e) {
-    console.error("Error formatting date:", isoDateString, e);
-    return isoDateString; // Return original if error
+    return isoDateString;
   }
 };
 
@@ -64,6 +59,103 @@ const TransactionsPage = () => {
   const [activeTab, setActiveTab] = useState('all');
   const [limit, setLimit] = useState(100); 
   const [offset, setOffset] = useState(0);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [transactionToDelete, setTransactionToDelete] = useState(null);
+
+  const handleEditTransaction = (transaction) => {
+    setSelectedTransaction(transaction);
+    setShowUpdateModal(true);
+  };
+
+  const handleDeleteTransaction = async () => {
+    if (!transactionToDelete) return;
+    
+    const transaction = transactionToDelete;
+    const transactionId = String(transaction.id);
+    setShowDeleteConfirm(false);
+    
+    if (!transaction.isPersisted) {
+      setError("This transaction cannot be deleted as it doesn't have a valid server ID.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const apiUrl = `https://bursting-gelding-24.hasura.app/api/rest/delete-transaction`;
+      
+      console.log(`Attempting to DELETE transaction. URL: ${apiUrl}, Body: ${JSON.stringify({ id: transactionId })}`);
+
+      const response = await fetch(
+        apiUrl,
+        {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-hasura-admin-secret': 'g08A3qQy00y8yFDq3y6N1ZQnhOPOa4msdie5EtKS1hFStar01JzPKrtKEzYY2BtF',
+            'x-hasura-role': 'user',
+            'x-hasura-user-id': '1',
+          },
+          body: JSON.stringify({ id: transactionId }),
+        }
+      );
+
+      if (!response.ok) {
+        let errorPayload = { message: `Failed to delete. Status: ${response.status} ${response.statusText}` };
+        try {
+          const responseBodyText = await response.text();
+          if (responseBodyText) {
+            try {
+              const jsonData = JSON.parse(responseBodyText);
+              if (jsonData.message) errorPayload.message = jsonData.message;
+              else if (jsonData.error) errorPayload.message = jsonData.error;
+              else if (Array.isArray(jsonData.errors) && jsonData.errors.length > 0 && jsonData.errors[0].message) errorPayload.message = jsonData.errors[0].message;
+              else if (jsonData.data && jsonData.data.delete_transactions_by_pk === null && jsonData.errors) {
+                  errorPayload.message = jsonData.errors[0]?.message || "Failed to delete, record might not exist or permissions issue.";
+              } else if (jsonData.data && Object.values(jsonData.data)[0] === null && jsonData.errors) {
+                  errorPayload.message = jsonData.errors[0]?.message || "Operation failed, record might not exist or permissions issue.";
+              }
+              else if (Object.keys(jsonData).length > 0) errorPayload.details = jsonData;
+              else errorPayload.message = responseBodyText;
+            } catch (jsonError) {
+              errorPayload.message = responseBodyText;
+            }
+          }
+        } catch (bodyError) {
+          console.error("Failed to read error response body:", bodyError);
+        }
+        
+        let errorMessage = `Failed to delete transaction. Status: ${response.status}`;
+        if (errorPayload.message && errorPayload.message !== `Failed to delete. Status: ${response.status} ${response.statusText}`) {
+          errorMessage += `. Message: ${errorPayload.message}`;
+        }
+        if (errorPayload.details) errorMessage += `. Details: ${JSON.stringify(errorPayload.details)}`;
+        
+        const error = new Error(errorMessage);
+        error.status = response.status;
+        error.responseBody = errorPayload;
+        throw error;
+      }
+
+      console.log(`Transaction ${transactionId} delete request successful. Status: ${response.status}`);
+      
+      // Optimistic update
+      setApiTransactionsData(prevData => prevData.filter(tx => String(tx.id) !== transactionId));
+      
+    } catch (error) {
+      console.error('Delete error object:', error);
+      console.error('Delete error message:', error.message);
+      if (error.responseBody) {
+          console.error('Delete error response body details:', error.responseBody);
+      }
+      setError(error.message || 'An unexpected error occurred during deletion.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchTransactions = async () => {
@@ -114,35 +206,30 @@ const TransactionsPage = () => {
           throw new Error('Processed data is not an array of transactions');
         }
         
-        // MODIFICATION: Transform and keep original date for sorting
         let transformedData = rawData.map(tx => {
-          const originalDateStr = tx.date || tx.transaction_date; // Get the raw date string
+          const originalDateStr = tx.date || tx.transaction_date;
+          const amountValue = Number(tx.amount) || 0;
+          const backendId = tx.id || tx.transaction_id;
           return {
-            id: tx.id || tx.transaction_id || Math.random().toString(36).substr(2, 9),
+            id: backendId || Math.random().toString(36).substr(2, 9),
+            isPersisted: !!backendId,
             name: tx.transaction_name || tx.name || 'Unknown Transaction',
             category: tx.category || 'Uncategorized',
-            date: formatDateFromAPI(originalDateStr), // Formatted date for display
-            originalDate: originalDateStr, // Keep original date string for sorting
-            amount: Number(tx.amount) || 0,
-            direction: tx.type === 'credit' ? 'up' : (tx.type === 'debit' ? 'down' : ((Number(tx.amount) || 0) >= 0 ? 'up' : 'down')),
+            date: formatDateFromAPI(originalDateStr),
+            originalDate: originalDateStr,
+            amount: tx.type === 'credit' ? Math.abs(amountValue) : -Math.abs(amountValue),
+            direction: tx.type === 'credit' ? 'up' : 'down',
           };
         });
         
-        // MODIFICATION: Sort transactions by originalDate in descending order (most recent first)
         transformedData.sort((a, b) => {
           const dateA = a.originalDate ? new Date(a.originalDate) : null;
           const dateB = b.originalDate ? new Date(b.originalDate) : null;
-
-          // Check if dates are valid. Invalid dates (or null) should be sorted predictably.
-          // We want valid dates to appear before invalid/missing dates.
           const isValidDateA = dateA && !isNaN(dateA.getTime());
           const isValidDateB = dateB && !isNaN(dateB.getTime());
-
-          if (isValidDateA && !isValidDateB) return -1; // a is valid, b is not -> a comes first (newer)
-          if (!isValidDateA && isValidDateB) return 1;  // b is valid, a is not -> b comes first (newer)
-          if (!isValidDateA && !isValidDateB) return 0; // both invalid/missing -> keep relative order
-
-          // Both dates are valid, sort descending (b - a for newest first)
+          if (isValidDateA && !isValidDateB) return -1;
+          if (!isValidDateA && isValidDateB) return 1;
+          if (!isValidDateA && !isValidDateB) return 0;
           return dateB.getTime() - dateA.getTime();
         });
         
@@ -156,10 +243,9 @@ const TransactionsPage = () => {
     };
 
     fetchTransactions();
-  }, [limit, offset]); // Added limit and offset as dependencies if you want re-fetch on change
+  }, [limit, offset]);
 
   const filteredTransactions = useMemo(() => {
-    // The apiTransactionsData is already sorted, filtering will preserve this order.
     if (activeTab === 'debit') {
       return apiTransactionsData.filter(t => t.amount < 0);
     }
@@ -177,7 +263,7 @@ const TransactionsPage = () => {
     return `${baseClass} text-gray-500 hover:text-gray-700 hover:border-b-2 hover:border-gray-300`;
   };
 
-  if (isLoading) {
+  if (isLoading && apiTransactionsData.length === 0) {
     return (
       <div className="flex">
         <Sidebar />
@@ -188,7 +274,7 @@ const TransactionsPage = () => {
     );
   }
 
-  if (error) {
+  if (error && apiTransactionsData.length === 0) {
     return (
       <div className="flex">
         <Sidebar />
@@ -201,17 +287,7 @@ const TransactionsPage = () => {
             <p className="text-gray-700 mb-1">Error: {error}</p>
             <button 
               onClick={() => {
-                // Simple retry by re-triggering the fetch.
-                // If limit/offset haven't changed, you might need a dedicated retry state
-                // or ensure fetchTransactions is callable and memoized appropriately.
-                // For this setup, changing offset slightly and back could trigger it,
-                // or simply make fetchTransactions callable.
-                // For simplicity, window.location.reload() is a hard retry.
-                // A better way if limit/offset are deps:
-                setOffset(prevOffset => prevOffset); // This would trigger effect if it's a dependency
-                // Or, if fetchTransactions was memoized with useCallback:
-                // fetchTransactions();
-                window.location.reload(); 
+                setOffset(prev => prev);
               }}
               className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
             >
@@ -236,15 +312,49 @@ const TransactionsPage = () => {
             Add Transaction
           </button>
           <AddTransaction 
-      showAddModal={showAddModal}
-      setShowAddModal={setShowAddModal}
-      onTransactionAdded={() => {
-        // You would typically fetch transactions again here
-        // fetchTransactions();
-      }}
-    />
+            showAddModal={showAddModal}
+            setShowAddModal={setShowAddModal}
+            onTransactionAdded={() => {
+              setShowAddModal(false);
+              setOffset(prev => prev + 1); 
+              setTimeout(() => setOffset(prev => prev - 1), 100);
+            }}
+          />
         </div>
         
+        {error && (
+          <div className="mb-4 p-4 bg-red-100 text-red-700 border border-red-400 rounded-md">
+            <p><strong>Error:</strong> {error}</p>
+            <button onClick={() => setError(null)} className="text-sm text-red-600 hover:text-red-800 font-semibold">Dismiss</button>
+          </div>
+        )}
+
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-80">
+              <h3 className="text-lg font-semibold mb-4">Delete Transaction?</h3>
+              <p className="text-gray-600 mb-6">
+                Are you sure you want to delete "{transactionToDelete?.name}"?
+                This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={handleDeleteTransaction}
+                  className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+                >
+                  Yes, Delete
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mb-6">
           <div className="flex border-b border-gray-200">
             <button
@@ -267,6 +377,17 @@ const TransactionsPage = () => {
             </button>
           </div>
         </div>
+        
+        <UpdateTransaction
+          showUpdateModal={showUpdateModal}
+          setShowUpdateModal={setShowUpdateModal}
+          transaction={selectedTransaction}
+          onTransactionUpdated={() => {
+            setShowUpdateModal(false);
+            setOffset(prev => prev + 1);
+            setTimeout(() => setOffset(prev => prev - 1), 100);
+          }}
+        />
 
         <div className="bg-white rounded-xl shadow-md">
           <div className="overflow-x-auto">
@@ -305,7 +426,7 @@ const TransactionsPage = () => {
                       {transaction.category}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {transaction.date} {/* This is the formatted date for display */}
+                      {transaction.date}
                     </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
                       transaction.amount >= 0 ? 'text-green-500' : 'text-red-500'
@@ -314,10 +435,24 @@ const TransactionsPage = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex items-center justify-end space-x-3">
-                        <button className="text-blue-400 hover:text-blue-600 focus:outline-none">
+                        <button 
+                          className="text-blue-400 hover:text-blue-600 focus:outline-none"
+                          onClick={() => handleEditTransaction(transaction)}
+                          disabled={!transaction.isPersisted}
+                          title={!transaction.isPersisted ? "Cannot edit an unsaved transaction" : "Edit transaction"}
+                        >
                           <PencilIcon />
-                        </button>
-                        <button className="text-red-400 hover:text-red-600 focus:outline-none">
+                       </button>
+                        
+                        <button 
+                          className="text-red-400 hover:text-red-600 focus:outline-none"
+                          onClick={() => {
+                            setTransactionToDelete(transaction);
+                            setShowDeleteConfirm(true);
+                          }}
+                          disabled={!transaction.isPersisted}
+                          title={!transaction.isPersisted ? "Cannot delete an unsaved transaction" : "Delete transaction"}
+                        >
                           <TrashIcon />
                         </button>
                       </div>
@@ -326,9 +461,9 @@ const TransactionsPage = () => {
                 ))}
               </tbody>
             </table>
-            {filteredTransactions.length === 0 && !isLoading && !error && (
+            {filteredTransactions.length === 0 && !isLoading && ( 
               <div className="text-center py-10 text-gray-500">
-                No transactions found.
+                No transactions found for the current filter.
               </div>
             )}
           </div>

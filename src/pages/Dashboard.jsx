@@ -1,8 +1,8 @@
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../context/AuthContext';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Bar } from 'react-chartjs-2';
-import { FaTrash, FaEdit, FaTimes } from 'react-icons/fa'
+import { FaTrash, FaEdit } from 'react-icons/fa';
 import AddTransaction from '../components/AddTransaction';
 import {
   Chart as ChartJS,
@@ -26,22 +26,29 @@ ChartJS.register(
 const Dashboard = () => {
   const { user } = useAuth();
   const [showAddModal, setShowAddModal] = useState(false);
+  const [stats, setStats] = useState({
+    totalCredit: 0,
+    totalDebit: 0,
+    recentTransactions: []
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const data = {
-    labels: ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+  const [chartData, setChartData] = useState({
+    labels: [],
     datasets: [
       {
         label: 'Debit',
-        data: [350, 250, 200, 500, 400, 420, 460],
+        data: [],
         backgroundColor: '#3b82f6',
       },
       {
         label: 'Credit',
-        data: [580, 460, 360, 300, 540, 280, 510],
+        data: [],
         backgroundColor: '#f59e0b',
       },
     ],
-  };
+  });
 
   const options = {
     responsive: true,
@@ -49,14 +56,148 @@ const Dashboard = () => {
       legend: {
         position: 'top',
       },
+      title: {
+        display: true,
+        text: 'Last 7 Days Transactions',
+      },
     },
   };
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const headers = {
+          'Content-Type': 'application/json',
+          'x-hasura-admin-secret': 'g08A3qQy00y8yFDq3y6N1ZQnhOPOa4msdie5EtKS1hFStar01JzPKrtKEzYY2BtF',
+          'x-hasura-role': 'user',
+          'x-hasura-user-id': user?.id || '1'
+        };
+
+        const [totalsRes, chartApiRes, transactionsRes] = await Promise.all([
+          fetch('https://bursting-gelding-24.hasura.app/api/rest/credit-debit-totals', { headers }),
+          fetch('https://bursting-gelding-24.hasura.app/api/rest/daywise-totals-7-days', { headers }),
+          fetch(`https://bursting-gelding-24.hasura.app/api/rest/all-transactions?limit=4&offset=0`, { headers })
+        ]);
+
+        if (!totalsRes.ok) throw new Error(`Failed to fetch totals: ${totalsRes.status}`);
+        if (!chartApiRes.ok) throw new Error(`Failed to fetch chart data: ${chartApiRes.status}`);
+        if (!transactionsRes.ok) throw new Error(`Failed to fetch transactions: ${transactionsRes.status}`);
+
+        const totalsData = await totalsRes.json();
+        const chartDataResponse = await chartApiRes.json();
+        const transactionsData = await transactionsRes.json();
+
+        // Process totals
+        const creditTotal = totalsData.totals_credit_debit_transactions
+          .find(t => t.type === 'credit')?.sum || 0;
+        const debitTotal = totalsData.totals_credit_debit_transactions
+          .find(t => t.type === 'debit')?.sum || 0;
+
+        // Process chart data
+        const chartDataArray = chartDataResponse.last_7_days_transactions_credit_debit_totals || [];
+        if (chartDataArray.length > 0) {
+          const groupedByDate = chartDataArray.reduce((acc, transaction) => {
+            const date = new Date(transaction.date).toISOString().split('T')[0];
+            if (!acc[date]) {
+              acc[date] = { date, credit: 0, debit: 0 };
+            }
+            if (transaction.type === 'credit') {
+              acc[date].credit += transaction.sum;
+            } else {
+              acc[date].debit += transaction.sum;
+            }
+            return acc;
+          }, {});
+
+          const last7Days = Object.values(groupedByDate)
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .slice(-7);
+
+          const labels = last7Days.map(day => 
+            new Date(day.date).toLocaleDateString('en-US', { weekday: 'short' })
+          );
+          const debitData = last7Days.map(day => day.debit);
+          const creditData = last7Days.map(day => day.credit);
+
+          setChartData({
+            labels,
+            datasets: [
+              { label: 'Debit', data: debitData, backgroundColor: '#3b82f6' },
+              { label: 'Credit', data: creditData, backgroundColor: '#f59e0b' }
+            ]
+          });
+        }
+
+        // Process transactions
+        const recent = (transactionsData.transactions || [])
+          .slice(0, 4)
+          .map(tx => ({
+            id: tx.id,
+            name: tx.transaction_name,
+            category: tx.category || 'Uncategorized',
+            date: tx.date,
+            amount: typeof tx.amount === 'number' ? tx.amount : 0,
+            type: tx.type
+          }));
+
+        setStats({
+          totalCredit: creditTotal,
+          totalDebit: debitTotal,
+          recentTransactions: recent
+        });
+
+      } catch (err) {
+        console.error('Fetch error in Dashboard:', err);
+        setError(err.message || 'Failed to load dashboard data');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (user) {
+      fetchData();
+    } else {
+      setIsLoading(false);
+    }
+  }, [user]);
+
+  if (isLoading) {
+    return (
+      <div className="flex">
+        <Sidebar />
+        <div className="flex-1 ml-64 p-8 flex justify-center items-center bg-gray-50 min-h-screen">
+          <p className="text-lg text-gray-500">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex">
+        <Sidebar />
+        <div className="flex-1 ml-64 p-8 bg-gray-50 min-h-screen">
+          <div className="bg-white p-6 rounded-lg shadow-md text-center">
+            <h2 className="text-xl font-semibold text-red-600 mb-3">Failed to Load Dashboard</h2>
+            <p className="text-gray-700 mb-1">Error: {error}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex">
       <Sidebar />
-      <div className="flex-1 ml-64 min-h-screen">
-        {/* Full-width navigation section */}
+      <div className="flex-1 ml-64 min-h-screen bg-gray-50">
         <div className="flex justify-between items-center mb-6 bg-white p-4 shadow">
           <h1 className="text-3xl font-bold text-gray-800">Accounts</h1>
           <button 
@@ -65,24 +206,27 @@ const Dashboard = () => {
           >
             + Add Transaction
           </button>
-          <AddTransaction 
-  showAddModal={showAddModal}
-  setShowAddModal={setShowAddModal}
-  onTransactionAdded={() => {
-    // Refresh transactions list or perform other actions
-  }}
-/>
+          <AddTransaction
+            showAddModal={showAddModal}
+            setShowAddModal={setShowAddModal}
+            onTransactionAdded={() => {
+              setShowAddModal(false);
+              window.location.reload();
+            }}
+          />
         </div>
-         
         
-        <div className="p-8 bg-gray-50">
+        <div className="p-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div className="bg-white p-6 rounded-xl shadow flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-500">Credit</p>
-                <p className="text-3xl font-bold text-green-500">$12,750</p>
+                <p className="text-3xl font-bold text-green-500">
+                  ${stats.totalCredit.toLocaleString()}
+                </p>
               </div>
-             <svg width="183" height="161" viewBox="0 0 183 161" fill="none" xmlns="http://www.w3.org/2000/svg">
+              
+                <svg width="183" height="161" viewBox="0 0 183 161" fill="none" xmlns="http://www.w3.org/2000/svg">
 <path fill-rule="evenodd" clip-rule="evenodd" d="M87.3449 7.06946C108.555 7.06946 106.134 44.5272 121.446 55.9454C141.713 71.0576 176.577 63.5739 176.577 89.5103C176.577 135.04 131.355 151.535 82.0727 151.535C32.7906 151.535 -9.25948 126.283 5.41459 80.873C20.0874 35.4628 38.064 7.06946 87.3449 7.06946Z" fill="#E9EEF7"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M89.5133 161C133.904 161 170.107 159.744 170.107 158.207C170.107 156.669 133.902 155.415 89.5133 155.415C45.1241 155.415 8.91943 156.67 8.91943 158.207C8.91943 159.743 45.1241 161 89.5133 161Z" fill="#D1DEED"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M70.7022 131.49C57.8518 131.49 47.4351 133.838 47.4351 136.734C47.4351 139.63 57.8518 141.979 70.7022 141.979C83.5526 141.979 93.9707 139.63 93.9707 136.734C93.9707 133.838 83.5539 131.49 70.7022 131.49Z" fill="#D0A485"/>
@@ -187,13 +331,17 @@ const Dashboard = () => {
 <path fill-rule="evenodd" clip-rule="evenodd" d="M0.775405 116.206H26.3572C26.7634 116.206 27.0935 115.877 27.0935 115.469C27.0935 115.062 26.7646 114.733 26.3572 114.733H0.775405C0.367962 114.733 0.0390625 115.062 0.0390625 115.469C0.0390625 115.877 0.367962 116.206 0.775405 116.206ZM37.3213 110.115H40.3673C40.7735 110.115 41.1036 109.786 41.1036 109.379C41.1036 108.971 40.7747 108.644 40.3673 108.644H37.3213C36.9151 108.644 36.5849 108.972 36.5849 109.379C36.5849 109.785 36.9138 110.115 37.3213 110.115ZM32.4492 116.206H34.8852C35.2902 116.206 35.6216 115.877 35.6216 115.469C35.6216 115.062 35.2914 114.733 34.8852 114.733H32.4492C32.0417 114.733 31.7128 115.062 31.7128 115.469C31.7128 115.877 32.0405 116.206 32.4492 116.206ZM5.64754 110.115H32.4492C32.8541 110.115 33.1843 109.786 33.1843 109.379C33.1843 108.971 32.8554 108.644 32.4479 108.644H5.64754C5.24132 108.644 4.91119 108.972 4.91119 109.379C4.91119 109.785 5.24009 110.115 5.64754 110.115Z" fill="#A3CFFB"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M28.9268 7.56223H54.5085C54.9147 7.56223 55.2436 7.23333 55.2436 6.82589C55.2436 6.41845 54.9147 6.08955 54.5085 6.08955H28.9268C28.5193 6.08955 28.1904 6.41845 28.1904 6.82589C28.1904 7.23333 28.5193 7.56223 28.9268 7.56223ZM65.4727 1.47146H68.5187C68.9236 1.47146 69.2538 1.14256 69.2538 0.735114C69.2538 0.328898 68.9249 0 68.5174 0H65.4714C65.0665 0 64.7351 0.328898 64.7351 0.735114C64.7351 1.14133 65.064 1.47146 65.4714 1.47146H65.4727ZM60.6005 7.56223H63.0378C63.4428 7.56223 63.7729 7.23333 63.7729 6.82589C63.7729 6.41845 63.4428 6.08955 63.0366 6.08955H60.6005C60.1931 6.08955 59.8642 6.41845 59.8642 6.82589C59.8642 7.23333 60.1919 7.56223 60.6005 7.56223ZM33.7989 1.47146H60.6005C61.0055 1.47146 61.3356 1.14256 61.3356 0.735114C61.3356 0.327671 61.0067 0 60.5993 0H33.7989C33.3939 0 33.0626 0.328898 33.0626 0.735114C33.0626 1.14133 33.3915 1.47146 33.7989 1.47146Z" fill="#A3CFFB"/>
 </svg>
+              
             </div>
             <div className="bg-white p-6 rounded-xl shadow flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-500">Debit</p>
-                <p className="text-3xl font-bold text-red-500">$5,600</p>
+                <p className="text-3xl font-bold text-red-500">
+                  ${stats.totalDebit.toLocaleString()}
+                </p>
               </div>
-             <svg width="189" height="155" viewBox="0 0 189 155" fill="none" xmlns="http://www.w3.org/2000/svg">
+              
+                 <svg width="189" height="155" viewBox="0 0 189 155" fill="none" xmlns="http://www.w3.org/2000/svg">
 <path fill-rule="evenodd" clip-rule="evenodd" d="M88.8497 1.34216C110.929 1.34216 108.41 35.9144 124.35 46.4521C145.447 60.3994 181.743 53.4919 181.743 77.4301C181.743 119.457 134.662 134.68 83.3609 134.68C32.0598 134.68 -11.7163 111.372 3.55797 69.4592C18.8334 27.55 37.544 1.34216 88.8497 1.34216Z" fill="#E9EEF7"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M70.8847 140.351C107.757 140.351 137.646 143.571 137.646 147.545C137.646 151.519 107.756 154.736 70.8847 154.736C34.0138 154.736 4.12354 151.515 4.12354 147.545C4.12354 143.575 34.0126 140.351 70.8847 140.351Z" fill="white"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M139.22 125.151C128.918 125.151 120.57 127.033 120.57 129.353C120.57 131.674 128.918 133.559 139.22 133.559C149.522 133.559 157.87 131.676 157.87 129.353C157.87 127.03 149.519 125.151 139.22 125.151Z" fill="#BADAF9"/>
@@ -249,85 +397,47 @@ const Dashboard = () => {
 <path fill-rule="evenodd" clip-rule="evenodd" d="M78.1265 8.47128C77.5414 8.1706 76.7137 7.87224 75.5806 7.83509V5.96252H73.852V7.97788C71.9759 8.3993 70.8638 9.74365 70.8638 11.4757C70.8638 13.2078 72.0816 14.176 73.7963 14.991C75.4227 15.6957 76.0043 16.2808 76.0043 17.1817C76.0043 18.0826 75.389 18.7524 74.1155 18.7524C73.0034 18.7524 71.9597 18.3658 71.2713 17.9583L70.7407 19.9365C71.4117 20.3266 72.5611 20.6795 73.6906 20.7132V22.7286H75.4227V20.5727C77.4183 20.1827 78.5851 18.735 78.5851 16.9344C78.5851 15.1338 77.6296 14.1076 75.5458 13.1695C74.1492 12.4811 73.3899 11.9854 73.3899 11.1739C73.3899 10.482 73.9925 9.7599 75.1766 9.7599C76.2005 9.7599 77.0654 10.1291 77.596 10.3961L78.1265 8.46895V8.47128Z" fill="white"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M69.2312 27.6474C69.5075 25.4706 69.1522 24.7892 68.1562 25.6007C68.2931 25.8781 68.3001 26.2299 68.1759 26.6548C67.6999 27.4314 67.5908 28.287 67.8474 29.2146C68.3779 29.0509 68.8399 28.5262 69.2312 27.6474Z" fill="#FCB88D"/>
 </svg>
-
+              
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-xl shadow-lg">
-  <h2 className="text-lg font-semibold text-emerald-900 mb-4">Last Transactions</h2>
-  <div className="flex overflow-x-auto pb-4 gap-4 scrollbar-hide">
-    {/* Transaction Card 1 */}
-    <div className="flex-none w-72 bg-white rounded-xl border border-emerald-100 p-4 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start mb-3">
-        <div>
-          <h3 className="font-medium text-emerald-900">Spotify Subscription</h3>
-          <p className="text-sm text-emerald-500">Shopping</p>
-        </div>
-        <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">28 Jan</span>
-      </div>
-      <div className="flex justify-between items-center">
-        <span className="text-red-500 font-medium">-$150</span>
-        <div className="flex gap-2">
-          <button className="text-blue-500 hover:text-blue-600 transition-colors">
-            <FaEdit className="w-4 h-4" />
-          </button>
-          <button className="text-red-500 hover:text-red-600 transition-colors">
-            <FaTrash className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-
-    {/* Transaction Card 2 */}
-    <div className="flex-none w-72 bg-white rounded-xl border border-emerald-100 p-4 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start mb-3">
-        <div>
-          <h3 className="font-medium text-emerald-900">Mobile Service</h3>
-          <p className="text-sm text-emerald-500">Service</p>
-        </div>
-        <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">25 Jan</span>
-      </div>
-      <div className="flex justify-between items-center">
-        <span className="text-red-500 font-medium">-$150</span>
-        <div className="flex gap-2">
-          <button className="text-blue-500 hover:text-blue-600 transition-colors">
-            <FaEdit className="w-4 h-4" />
-          </button>
-          <button className="text-red-500 hover:text-red-600 transition-colors">
-            <FaTrash className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-
-    {/* Transaction Card 3 */}
-    <div className="flex-none w-72 bg-white rounded-xl border border-emerald-100 p-4 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start mb-3">
-        <div>
-          <h3 className="font-medium text-emerald-900">Emily Wilson</h3>
-          <p className="text-sm text-emerald-500">Transfer</p>
-        </div>
-        <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">20 Jan</span>
-      </div>
-      <div className="flex justify-between items-center">
-        <span className="text-green-500 font-medium">+$780</span>
-        <div className="flex gap-2">
-          <button className="text-blue-500 hover:text-blue-600 transition-colors">
-            <FaEdit className="w-4 h-4" />
-          </button>
-          <button className="text-red-500 hover:text-red-600 transition-colors">
-            <FaTrash className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
+          <div className="bg-white p-6 rounded-xl shadow-lg mb-6">
+            <h2 className="text-lg font-semibold text-emerald-900 mb-4">Last Transactions</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {stats.recentTransactions.map((transaction) => (
+                <div key={transaction.id} className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h3 className="font-medium text-gray-900">{transaction.name}</h3>
+                      <p className="text-sm text-gray-500">{transaction.category}</p>
+                    </div>
+                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
+                      {new Date(transaction.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className={`font-medium ${transaction.type === 'credit' ? 'text-green-500' : 'text-red-500'}`}>
+                      {transaction.type === 'credit' ? '+' : '-'}${Math.abs(transaction.amount).toLocaleString()}
+                    </span>
+                    {/*<div className="flex gap-2">
+                      <button className="text-blue-500 hover:text-blue-600 transition-colors">
+                        <FaEdit className="w-4 h-4" />
+                      </button>
+                      <button className="text-red-500 hover:text-red-600 transition-colors">
+                        <FaTrash className="w-4 h-4" />
+                      </button>
+                    </div>*/}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <div className="bg-white p-6 rounded-xl shadow mb-6">
             <h2 className="text-lg font-semibold text-gray-700 mb-4">Debit & Credit Overview</h2>
-            <p className="text-sm text-gray-500 mb-4">$7,560 Debited & $5,420 Credited in this Week</p>
-            <Bar data={data} options={options} />
+            <div >
+              <Bar data={chartData} options={options} />
+            </div>
           </div>
 
           <div className="bg-white p-6 rounded-xl shadow">

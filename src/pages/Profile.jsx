@@ -6,6 +6,8 @@ const Profile = () => {
   const { user, logout } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [password, setPassword] = useState('********');
+  const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
+
 
   // This effect ensures password is only available during current session
   useEffect(() => {
@@ -15,6 +17,11 @@ const Profile = () => {
       setPassword('********');
     }
   }, [user]);
+
+  const handleConfirmLogout = () => {
+    logout();
+    setShowLogoutConfirmation(false);
+  };
 
   if (!user) {
     return (
@@ -107,12 +114,38 @@ const Profile = () => {
 
           <div className="mt-8 pt-4 border-t border-gray-200">
             <button 
-              onClick={logout}
+              onClick={() => setShowLogoutConfirmation(true)}
               className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
             >
               Logout
             </button>
           </div>
+          {showLogoutConfirmation && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-xl max-w-sm w-full mx-4">
+            <p className="text-gray-800 font-medium mb-3">
+              Are you sure you want to Logout?
+            </p>
+            <p className="text-gray-500 text-sm mb-6">
+              
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setShowLogoutConfirmation(false)}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800 rounded-md hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmLogout}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+              >
+                Yes, Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
         </div>
       </div>
     </div>
