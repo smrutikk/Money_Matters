@@ -10,6 +10,15 @@ export const AuthProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
 
+  // Hardcoded admin credentials
+  const ADMIN_CREDENTIALS = {
+    email: 'admin@gmail.com',
+    password: 'Admin@123',
+    id: 'admin-001',
+    name: 'Administrator',
+    role: 'admin'
+  };
+
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -52,10 +61,22 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     try {
-      // Step 1: Authenticate and get user ID
+      // Check for admin login first
+      if (email === ADMIN_CREDENTIALS.email && password === ADMIN_CREDENTIALS.password) {
+        setUser(ADMIN_CREDENTIALS);
+        setIsAuthenticated(true);
+        localStorage.setItem('user', JSON.stringify(ADMIN_CREDENTIALS));
+        navigate('/admin/dashboard');
+        return ADMIN_CREDENTIALS;
+      }
+
+      // Regular user login with API
       const authResponse = await axios.post(
         'https://bursting-gelding-24.hasura.app/api/rest/get-user-id',
-        { email, password },
+        { 
+          email, 
+          password 
+        },
         {
           headers: {
             'content-type': 'application/json',
@@ -63,34 +84,51 @@ export const AuthProvider = ({ children }) => {
           }
         }
       );
-      
-      const userId = authResponse.data.get_user_id[0]?.id;
-      if (!userId) {
-        throw new Error('User not found');
+
+      // Handle API response
+      const authData = authResponse.data?.get_user_id?.[0];
+      if (!authData?.id) {
+        throw new Error('User not found or invalid credentials');
       }
 
-      // Step 2: Fetch user profile
-      const profileData = await fetchUserProfile(userId);
+      // Fetch user profile
+      const profileData = await fetchUserProfile(authData.id);
       
-      // Combine all user data (including password in session only)
+      // Combine user data
       const userData = {
-        id: userId,
+        id: authData.id,
         email,
-        password, // Stored temporarily for current session
+        role: 'user',
         ...profileData
       };
 
+      // Update state and storage
       setUser(userData);
       setIsAuthenticated(true);
+      localStorage.setItem('user', JSON.stringify(userData));
       
-      // Store in localStorage without password
-      const { password: _, ...userWithoutPassword } = userData;
-      localStorage.setItem('user', JSON.stringify(userWithoutPassword));
-      
+      // Navigate to home page
       navigate('/');
+      
+      return userData;
     } catch (error) {
       console.error('Login error:', error);
-      throw new Error('Invalid email or password');
+      
+      let errorMessage = 'Login failed';
+      if (error.response) {
+        // Handle different HTTP status codes
+        if (error.response.status === 400) {
+          errorMessage = 'Invalid request format';
+        } else if (error.response.status === 401) {
+          errorMessage = 'Invalid credentials';
+        } else if (error.response.data?.message) {
+          errorMessage = error.response.data.message;
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      throw new Error(errorMessage);
     }
   };
 
@@ -102,7 +140,13 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      isAuthenticated, 
+      isLoading, 
+      login, 
+      logout 
+    }}>
       {children}
     </AuthContext.Provider>
   );
